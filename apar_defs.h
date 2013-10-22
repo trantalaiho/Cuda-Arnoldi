@@ -153,14 +153,20 @@ static inline void MANGLE(NAME##_storeFunc)(OUT_TYPE RESULT_NAME, DST_TYPE DST_N
 #else
 // CUDA impl here
 
+#ifndef UNROLL_NLOG2_CUDA_STEPS
+#define UNROLL_NLOG2_CUDA_STEPS 3
+#endif
+
 #include "cuda_reduce.h"
 #include "cuda_matmul.h"
+#include "cuda_forall.h"
 
 // This seems to be more or less best choice for us
 // (Don't worry about seemingly low thread-count, we run multiple blocks on
 // each sm giving ok occupation)
 #define BLOCK_SIZE_LOG2     6
 #define BLOCK_SIZE          (1 << BLOCK_SIZE_LOG2) // for log = 6 this gives 64
+
 
 // NOTE: This can be used for multi-stream support
 #ifndef CURRENT_STREAM
@@ -192,34 +198,13 @@ static void waitCudaStream(void* stream){
 }
 
 
-#define PARALLEL_KERNEL_BEGIN(NAME, INPUTTYPE, INPUT, INDEXNAME, MULTIINDEX)                                        \
-/*__shared__ int s_siteIndexList[BLOCK_SIZE];*/                                                                     \
-template <typename TRANSFORMFUNTYPE> __global__                                                                     \
-void MANGLE(transFormKernel_##NAME)(INPUTTYPE input, TRANSFORMFUNTYPE functor, int start, int end) {                \
-    int idx = blockIdx.x * blockDim.x + threadIdx.x + start;                                                        \
-    if (idx < end){                                                                                                 \
-      functor(input, idx, blockIdx.y);                                                                              \
-      }                                                                                                             \
-}                                                                                                                   \
-template <typename TRANSFORMFUNTYPE> static inline                                                                  \
-void MANGLE(callTransformKernel_##NAME)(INPUTTYPE input, TRANSFORMFUNTYPE functionObject, int start, int end, int nMulti) {     \
-  int size = end - start;                                                                                           \
-  const dim3 block = BLOCK_SIZE;                                                                                    \
-  int paddedSize = (size + (BLOCK_SIZE) - 1) & (~((BLOCK_SIZE) - 1));                                               \
-  dim3 grid = paddedSize >> ( BLOCK_SIZE_LOG2 );                                                                    \
-  grid.y = nMulti;                                                                                                  \
-  if(size > 0 && nMulti > 0)                                                                                        \
-      MANGLE(transFormKernel_##NAME)<<<grid, block, 0, CURRENT_STREAM()>>>(input, functionObject, start, end);      \
-}                                                                                                                   \
-                                                                            \
-struct MANGLE(NAME##_functor)                                               \
-{                                                                           \
-  __device__   /*__host__ */                                                \
-  void operator()(INPUTTYPE INPUT, int INDEXNAME, int MULTIINDEX) const     \
-                                                                            \
+#define PARALLEL_KERNEL_BEGIN(NAME, INPUTTYPE, INPUT, INDEXNAME, MULTIINDEX)                        \
+    struct MANGLE(NAME##_xformFunctor) {                                                            \
+        __device__ /* __host__ */                                                                   \
+        void operator() (INPUTTYPE INPUT, int INDEXNAME, int MULTIINDEX = 0) const {
 
 
-#define PARALLEL_KERNEL_END() };
+#define PARALLEL_KERNEL_END() } } ;
 
 #ifdef TEST_CUDA_ERROR
 #undef TEST_CUDA_ERROR
@@ -236,11 +221,12 @@ struct MANGLE(NAME##_functor)                                               \
 #define TEST_CUDA_ERROR(STR) do {} while(0)
 #endif
 
-#define KERNEL_CALL(NAME, INPUT, A, B, NMULTI)                                      \
-  do {                                                                              \
-      MANGLE(NAME##_functor) functionObject;                                        \
-      MANGLE(callTransformKernel_##NAME)(INPUT, functionObject, (A), (B), NMULTI);  \
-      TEST_CUDA_ERROR("transformkernel:"#NAME " ");                                 \
+#define KERNEL_CALL(NAME, INPUT, A, B, NMULTI)                                          \
+  do {                                                                                  \
+      MANGLE(NAME##_xformFunctor) functionObject;                                       \
+      callTransformKernel<UNROLL_NLOG2_CUDA_STEPS>                                      \
+          (INPUT, functionObject, A, B, NMULTI, CURRENT_STREAM());                      \
+      TEST_CUDA_ERROR("transformkernel:"#NAME " ");                                     \
       } while (0)
 
 #ifndef __global__
@@ -249,12 +235,13 @@ struct MANGLE(NAME##_functor)                                               \
 
 template <typename TRANSFORMFUNTYPE, typename INPUTTYPE>
 __global__
-void dXformKernel2d(INPUTTYPE input, TRANSFORMFUNTYPE xformFun, int x0, int x1, int y0, int y1){
-    int idx = threadIdx.x + x0;
-    int idy = blockIdx.x + y0;
+void dXformKernel2d(INPUTTYPE input, TRANSFORMFUNTYPE xformFun, int x0, int x1, int y0, int y1, int nMulti){
+    int idx = threadIdx.x + x0 + (blockIdx.x << BLOCK_SIZE_LOG2);
+    int idy = blockIdx.y + y0;
     while (idx < x1 && idy < y1){
-      xformFun(input, idx, idy, blockIdx.y);
-      idx += BLOCK_SIZE;
+      for (int multiIdx = 0; multiIdx < nMulti; multiIdx++)
+          xformFun(input, idx, idy, multiIdx);
+      idx += (blockDim.x << BLOCK_SIZE_LOG2);
       }
 }
 
@@ -262,11 +249,14 @@ void dXformKernel2d(INPUTTYPE input, TRANSFORMFUNTYPE xformFun, int x0, int x1, 
 template <typename TRANSFORMFUNTYPE, typename INPUTTYPE>
 static inline void call2dXformKernel(INPUTTYPE input, TRANSFORMFUNTYPE xformFun, int x0, int x1, int y0, int y1, int nMulti){
     int sizey = y1 - y0;
+    int sizex = x1 - x0;
     dim3 block = BLOCK_SIZE;
-    dim3 grid = sizey;
-    grid.y = nMulti;
+    dim3 grid = sizex >> BLOCK_SIZE_LOG2;
+    if ((grid.x << BLOCK_SIZE_LOG2) < sizex)
+        grid.x++;
+    grid.y = sizey;
     if(sizey > 0 && nMulti > 0 && x1 > x0){
-        dXformKernel2d<<<grid, block, 0, CURRENT_STREAM()>>>(input, xformFun, x0, x1, y0, y1);
+        dXformKernel2d<<<grid, block, 0, CURRENT_STREAM()>>>(input, xformFun, x0, x1, y0, y1, nMulti);
 #if P_ERROR_CHECKS
         cudaError_t error = cudaGetLastError();
         if (error != cudaSuccess)

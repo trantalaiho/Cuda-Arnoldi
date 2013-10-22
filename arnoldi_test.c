@@ -222,8 +222,9 @@ int main(int argc, char *argv[]) {
 #if defined(CUDA)
   cudaMalloc(&devinit_vec, N*sizeof(scomplex_t));
   if (!fast_matmul) cudaMalloc(&devmat, N*N*sizeof(scomplex_t));
+  else devmat = NULL;
   cudaMemcpy(devinit_vec, init_vec, sizeof(scomplex_t) * N, cudaMemcpyHostToDevice);
-  cudaMemcpy(devmat, mat, sizeof(scomplex_t) * N * N, cudaMemcpyHostToDevice);
+  if (!fast_matmul) cudaMemcpy(devmat, mat, sizeof(scomplex_t) * N * N, cudaMemcpyHostToDevice);
 #else
   devinit_vec = init_vec;
   devmat = mat;
@@ -302,7 +303,7 @@ int main(int argc, char *argv[]) {
   free(init_vec);
   free(mat);
 #if defined(CUDA)
-  cudaFree(devmat);
+  if (devmat) cudaFree(devmat);
   cudaFree(devinit_vec);
 #endif
 

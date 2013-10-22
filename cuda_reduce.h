@@ -100,7 +100,12 @@ callKahanReduceKernelNDim(
 #define PRINT_FREE(BUFFER)
 #endif
 
+#ifdef UNROLL_NLOG2_CUDA_STEPS
+#define REDUCE_UNROLL_LOG2      UNROLL_NLOG2_CUDA_STEPS
+#else
 #define REDUCE_UNROLL_LOG2      1
+#endif
+
 #define REDUCE_UNROLL           (1 << REDUCE_UNROLL_LOG2)
 
 #if R_ERROR_CHECKS || R_PRINT_ALL_MALLOCS
@@ -289,6 +294,7 @@ void histoKernel_reduce(
         else
         {
           // Example REDUCE_BLOCK_SIZE == 256
+#if REDUCE_BLOCK_SIZE >= 128
           int limit = REDUCE_BLOCK_SIZE >> 1;     // Limit = 128
           if (threadIdx.x < limit)                // For all i < 128 Add a[i] <- a[i] + a[i+128]
               allbins[threadIdx.x] = sumfunObj(allbins[threadIdx.x], allbins[threadIdx.x + limit]);
@@ -297,16 +303,20 @@ void histoKernel_reduce(
           limit >>= 1;                            // Limit = 64
           int looplimit = ((REDUCE_BLOCK_SIZE_LOG2 - 2)); // Looplimit = 6
   #pragma unroll
-          for (int loop = 5; loop < looplimit; loop++){   // Two iterations of loop
-              __syncthreads();                            // 1: For all i add a[i] <-  a[i] + a[i + 64], then i+32
-              allbins[threadIdx.x] = sumfunObj(allbins[threadIdx.x], allbins[threadIdx.x + limit]);
-              limit >>= 1;                                // Limit = 32 -> limit = 16
+          for (int loop = 5; loop < looplimit; loop++){   // One iteration of loop
+              __syncthreads();                            // 1: For all i add a[i] <-  a[i] + a[i + 64]
+              if (threadIdx.x < limit)
+                  allbins[threadIdx.x] = sumfunObj(allbins[threadIdx.x], allbins[threadIdx.x + limit]);
+              limit >>= 1;                                // Limit = 32
           }
+#endif
           if (threadIdx.x >= 32) return;
           __syncthreads();
           // Unroll rest manually
+#if REDUCE_BLOCK_SIZE > 32
           allbins[threadIdx.x] = sumfunObj(allbins[threadIdx.x], allbins[threadIdx.x + 32]);
           __threadfence_block();
+#endif
           allbins[threadIdx.x] = sumfunObj(allbins[threadIdx.x], allbins[threadIdx.x + 16]);
           __threadfence_block();
           allbins[threadIdx.x] = sumfunObj(allbins[threadIdx.x], allbins[threadIdx.x + 8]);
@@ -655,7 +665,11 @@ void callKahanReduceImpl(
     cudaStream_t stream,
     bool outInDev,
     MINUSFUNTYPE minusFunObj, OUTPUTTYPE zero,
-    int multidim)
+    int multidim,
+    void** tmpbuf,
+    size_t* tmpbufSize,
+    bool accumulate
+    )
 {
     INDEXT size = end - start;
     if (end <= start)

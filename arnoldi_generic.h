@@ -1028,8 +1028,10 @@ int newrotate_basis(fieldtype **eig_vec, cmatrix *v, multisize size, int nSubEig
 #endif
 
     nblocks = size.size / (blocksize * n_eigs);
-    if (nblocks == 0)
+    if (nblocks == 0){
+        free_fieldtype(temp);
         return 1; // Go to old codepath if very small vectors wrt, amount of requested eigenvalues
+    }
     stride = blocksize * nblocks;
 
     // printf("\nnewrotate_basis!\n");
@@ -1326,7 +1328,9 @@ PARALLEL_MVECMUL_END()
 
 
 // Sometimes this one seems a tad faster, but on small vectors not (not enough unrolling here)
+#ifndef USE_MATRIX_MUL_CODEPATH
 #define USE_MATRIX_MUL_CODEPATH 0
+#endif
 
 
 static void multi_fvec_cdot_V(fieldtype **V, fieldtype *z, int n, int maxressize, lcomplex* results, multisize size){
