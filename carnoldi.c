@@ -24,6 +24,24 @@
 
 #include "arnoldi.h"
 
+#ifdef TIMER
+#define TRACE_STATISTICS	1
+#include <sys/time.h>
+#include <sys/resource.h>
+double cputime(void)
+{
+  struct rusage resource;
+  //extern int getrusage();
+  extern int getrusage(int who, struct rusage *usage);
+
+  getrusage(RUSAGE_SELF,&resource);
+  return(resource.ru_utime.tv_sec + 1e-6*resource.ru_utime.tv_usec +
+         resource.ru_stime.tv_sec + 1e-6*resource.ru_stime.tv_usec);
+
+}
+
+#endif
+
 
 #define RADIX_SIZE 32
 
@@ -281,6 +299,9 @@ int run_carnoldi(
 
     scalar_reduction_f = functions->scalar_redFun;
     complex_reduction_f = functions->complex_redFun;
+#ifdef TIMER
+    s_cputimef = &cputime;
+#endif
     error = run_arnoldiabs(n_eigs, n_extend, tolerance, e_vecs, (lcomplex*)e_vals, maxIter, size, nMulti, stride, mode);
     if (error)
         goto cleanup;

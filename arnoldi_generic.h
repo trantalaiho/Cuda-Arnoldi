@@ -48,6 +48,7 @@ static double s_parallelT = 0.0;
 static double s_totArnT = 0.0;
 static double s_GivensT = 0.0;
 static double s_restartRotationT = 0.0;
+static double s_deflateRotationT = 0.0;
 static double s_deflateT = 0.0;
 static double s_geevFunT = 0.0;
 static int s_nCDotProds = 0;
@@ -197,6 +198,25 @@ lcomplex cmulf( const lcomplex * restrict a, const lcomplex * restrict b) {
     c.imag = (*a).imag * (*b).real + (*a).real * (*b).imag;
     return c;
 }
+
+static inline __host__ __device__
+void cmaddf( const lcomplex * restrict a, const lcomplex * restrict b, lcomplex * c) {
+    radix tmp;
+    tmp = (*a).real * (*b).real - (*a).imag * (*b).imag;
+    c->imag += (*a).imag * (*b).real + (*a).real * (*b).imag;
+    c->real += tmp;
+}
+
+// As above, but compute c += (Conj a) b
+static inline __host__ __device__
+void cmaddf_an( const lcomplex * restrict a, const lcomplex * restrict b, lcomplex * c) {
+    radix tmp;
+    tmp = (*a).real * (*b).real + (*a).imag * (*b).imag;
+    c->imag += (*a).real * (*b).imag - (*a).imag * (*b).real;
+    c->real += tmp;
+}
+
+
 
 static inline __host__ __device__
 radix cabs_sqf(const lcomplex* a) {
@@ -1011,6 +1031,9 @@ int newrotate_basis(fieldtype **eig_vec, cmatrix *v, multisize size, int nSubEig
     int nblocks, stride, start;
     rb_inputT input;
 
+    int maxsize = 1024*256;
+    int tmpsize = size.size < maxsize ? size.size : maxsize;
+
     temp = new_fieldtype(size.size, size.nMulti);
     if (!temp)
         return -1;
@@ -1027,14 +1050,25 @@ int newrotate_basis(fieldtype **eig_vec, cmatrix *v, multisize size, int nSubEig
     input.eig_vec = eig_vec;
 #endif
 
-    nblocks = size.size / (blocksize * n_eigs);
+    if (tmpsize <= blocksize * n_eigs){
+        if (size.size >= 4 * blocksize * n_eigs){
+            tmpsize = 4 * blocksize * n_eigs;
+        } else if (size.size >= 2 * blocksize * n_eigs){
+            tmpsize = 2 * blocksize * n_eigs;
+        } else {
+            tmpsize = size.size;
+        }
+    }
+
+    nblocks = tmpsize / (blocksize * n_eigs);
     if (nblocks == 0){
         free_fieldtype(temp);
+        //printf("OLD ROTATE!\n");
         return 1; // Go to old codepath if very small vectors wrt, amount of requested eigenvalues
     }
     stride = blocksize * nblocks;
 
-    // printf("\nnewrotate_basis!\n");
+    //printf("\nnewrotate_basis - nblocks = %d!\n", nblocks);
 
     input.blockSize = stride;
 
@@ -2215,6 +2249,7 @@ void orthQ(cmatrix *restrict Q, lcomplex *y) {
 
   // assume y not normalised
   for(i=0; i<Q->n; i++) {
+    //norm += cabs_sqf(&y[i]);
     norm += CABSF(&y[i])*CABSF(&y[i]);
   }
   norm = sqrt(norm);
@@ -2234,6 +2269,7 @@ void orthQ(cmatrix *restrict Q, lcomplex *y) {
   for(j=1; j<Q->n; j++) {
 
     yjsq.real = CABSF(&y[j])*CABSF(&y[j]);
+    //yjsq.real = cabs_sqf(&y[j]);
     yjsq.imag = 0.0;
     sigma = caddf(&sigma,&yjsq);
     tau = mycsqrt(&sigma);
@@ -2322,6 +2358,7 @@ int deflate(fieldtype **eig_vec,
          multisize size, cmatrix *Q) {
 #ifdef TRACE_STATISTICS
   double t0 = s_cputimef ? s_cputimef() : 0.0;
+  double t1;
 #endif
   int j, k, l, m;
 
@@ -2336,7 +2373,7 @@ int deflate(fieldtype **eig_vec,
 
   double tot;
 
-  lcomplex entry;
+  //lcomplex entry;
 
   cmatrix U;
 
@@ -2361,16 +2398,20 @@ int deflate(fieldtype **eig_vec,
 
   for(j=((h->n)); j>3; j--) {
     // 3.1
+    radix invsqrt_tot;
     tot = 0.0;
     for(k=2;k<j;k++) {
       z[k-2] = h->e[j-1][k-1];
+      //tot += cabs_sqf(z[k-2]);
       tot += CABSF(&z[k-2])*CABSF(&z[k-2]);
     }
+    
+    invsqrt_tot = 1.0/sqrt(tot);    
 
     // 3.2
     for(k=2;k<j;k++) {
-      z[k-2].real = z[k-2].real/sqrt(tot);
-      z[k-2].imag = -1.0*z[k-2].imag/sqrt(tot);
+      z[k-2].real = z[k-2].real * invsqrt_tot;
+      z[k-2].imag = -1.0*z[k-2].imag * invsqrt_tot;
     }
 
     // 3.3
@@ -2391,11 +2432,12 @@ int deflate(fieldtype **eig_vec,
       ht.e[k][m].imag = 0.0;
 
       for(l=1;l<(j-1);l++) {
-        entry = cmulf(&(h->e[k][l]),&(U.e[l-1][m-1]));
+        cmaddf(&(h->e[k][l]),&(U.e[l-1][m-1]), &(ht.e[k][m]));
+        //entry = cmulf(&(h->e[k][l]),&(U.e[l-1][m-1]));
 
         //          entry.real = 0.0;
         //          entry.imag = 0.0;
-        ht.e[k][m] = caddf(&(ht.e[k][m]),&entry);
+        //ht.e[k][m] = caddf(&(ht.e[k][m]),&entry);
 
       }
     }
@@ -2413,14 +2455,15 @@ int deflate(fieldtype **eig_vec,
       ht.e[k][m].imag = 0.0;
 
       for(l=1;l<(j-1);l++) {
-        entry = conjgf(&(U.e[l-1][k-1]));
-        entry = cmulf(&entry,&(h->e[l][m]));
+        cmaddf_an(&(U.e[l-1][k-1]), &(h->e[l][m]), &ht.e[k][m]);
+        //entry = conjgf(&(U.e[l-1][k-1]));
+        //entry = cmulf(&entry,&(h->e[l][m]));
 
         //      entry.real = 0.0;
         //      entry.imag = 0.0;
 
 
-        ht.e[k][m] = caddf(&(ht.e[k][m]),&entry);
+        //ht.e[k][m] = caddf(&(ht.e[k][m]),&entry);
 
         }
     }
@@ -2438,9 +2481,10 @@ int deflate(fieldtype **eig_vec,
       qt.e[k][m].imag = 0.0;
 
       for(l=1;l<j-1;l++) {
-        entry = cmulf(&(Q->e[k][l]),&(U.e[l-1][m-1]));
+        cmaddf(&(Q->e[k][l]),&(U.e[l-1][m-1]), &(qt.e[k][m]));
+        //entry = cmulf(&(Q->e[k][l]),&(U.e[l-1][m-1]));
 
-        qt.e[k][m] = caddf(&(qt.e[k][m]),&entry);
+        //qt.e[k][m] = caddf(&(qt.e[k][m]),&entry);
 
       }
       }
@@ -2453,10 +2497,20 @@ int deflate(fieldtype **eig_vec,
   }
 
   cmat_copy(Q, &qt);
+
 #ifdef TRACE_STATISTICS
   s_nDefRotate++;
+  t1 = s_cputimef ? s_cputimef() : 0.0;
 #endif
+
   error = rotate_basis(eig_vec, &qt, size, qt.n);
+
+#ifdef TRACE_STATISTICS
+  if (s_cputimef)
+    s_deflateRotationT += s_cputimef() - t1;
+#endif
+
+
   if (error != 0){
       error = 10 * error - 2;
       goto cleanup;
@@ -2566,6 +2620,7 @@ int arnoldi(fieldtype **eig_vec,// vectors
   s_deflateT = 0.0;
   s_GivensT = 0.0;
   s_restartRotationT = 0.0;
+  s_deflateRotationT = 0.0;
   s_geevFunT = 0.0;
 
   s_nCDotProds = 0;
@@ -2931,15 +2986,20 @@ int arnoldi(fieldtype **eig_vec,// vectors
            * Something to optimise later.
            */
           givens_to_matrix(givens,&Q);
+#if USE_POST_ROTATE_CODEPATH
           if (j == n_eigs){
               cmat_copy(&Q,&Qnew);
           }
           else
           {
-              cmat_mult(&Qnew,&Q,&R);
-              cmat_copy(&R,&Qnew);
+              #if 1
+                right_givens(&Qnew, givens);
+              #else 
+                cmat_mult(&Qnew,&Q,&R);
+                cmat_copy(&R,&Qnew);
+              #endif
           }
-
+#endif
           for(l = 0; l < (n_eigs + n_eigs_extend); l++) {
             // Should this not be: conjgf(&q[l]);
             qtemp[l] =  q[l];
@@ -3095,6 +3155,7 @@ int arnoldi(fieldtype **eig_vec,// vectors
       printf("Time in Deflate method: %f\n", s_deflateT);
       printf("Time in Givens rotate method: %f\n", s_GivensT);
       printf("Time in Arnoldi restart rotations: %f\n", s_restartRotationT);
+      printf("Time in Deflation rotations: %f\n", s_deflateRotationT);
       printf("Time in small, dense geev-function method: %f\n", s_geevFunT);
 
   }

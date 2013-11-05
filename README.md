@@ -155,6 +155,10 @@ Issues and Future Work
 		Krylov subspace cannot be further expanded. In this case a possible solution would
 		be to select a new starting vector and start again.
   * Code is very lightly commented, but most of it should be easy to read.
+  * deflate() should be optimized wrt. high number of requested eigenvalues (~ 100 and up).
+		The method does 3 matrix-matrix multiplications in a loop on the "small" matrices, 
+		which can start to show up when the small matrix is not so small wrt. problem size.
+		One obvious way to handle this is to do it on the GPU.
   * Suggestions how to improve the software will be greatly appreciated.
 		(Email: teemu.rantalaiho at helsinki.fi)
 

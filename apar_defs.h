@@ -233,16 +233,75 @@ static void waitCudaStream(void* stream){
 #define __global__
 #endif
 
-template <typename TRANSFORMFUNTYPE, typename INPUTTYPE>
+
+static __global__
+void detectCudaArchKernel(int* res)
+{
+    int result;
+#if __CUDA_ARCH__ >= 350
+    result = 350;
+#elif __CUDA_ARCH__ >= 300
+    result = 300;
+#elif __CUDA_ARCH__ >= 210
+    result = 210;
+#elif __CUDA_ARCH__ >= 200
+    result = 200;
+#elif __CUDA_ARCH__ >= 130
+    result = 130;
+#elif __CUDA_ARCH__ >= 120
+    result = 120;
+#elif __CUDA_ARCH__ >= 110
+    result = 110;
+#else
+    result = 100;
+#endif
+    if (threadIdx.x == 0)
+        *res = result;
+}
+
+
+static inline
+int DetectCudaArch(void)
+{
+    // The only way to know from host-code, which device architecture our kernels have been generated
+    // against, is to run a kernel that actually checks it.. :)
+    dim3 grid = 1;
+    //dim3 block = 32;
+    static int result = 0;
+    if (result == 0)
+    {
+        void* tmpBuf;
+        cudaMalloc(&tmpBuf, sizeof(int));
+        detectCudaArchKernel<<<grid, grid>>>((int*)tmpBuf);
+        cudaMemcpy(&result, tmpBuf, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaFree(tmpBuf);
+    }
+    return result;
+}
+
+
+template <bool old, typename TRANSFORMFUNTYPE, typename INPUTTYPE>
 __global__
 void dXformKernel2d(INPUTTYPE input, TRANSFORMFUNTYPE xformFun, int x0, int x1, int y0, int y1, int nMulti){
-    int idx = threadIdx.x + x0 + (blockIdx.x << BLOCK_SIZE_LOG2);
-    int idy = blockIdx.y + y0;
-    while (idx < x1 && idy < y1){
-      for (int multiIdx = 0; multiIdx < nMulti; multiIdx++)
+    if (old){
+        for (int multiIdx = 0; multiIdx < nMulti; multiIdx++){
+            int idx = threadIdx.x + x0 + (blockIdx.x << BLOCK_SIZE_LOG2);
+            int idy = blockIdx.y + y0;
+            while (idx < x1 && idy < y1){
+              xformFun(input, idx, idy, multiIdx);
+              idx += (blockDim.x << BLOCK_SIZE_LOG2);
+              }
+        }
+    } else {
+        int idx = threadIdx.x + x0 + (blockIdx.x << BLOCK_SIZE_LOG2);
+        int idy = blockIdx.y + y0;
+        int multiIdx = blockIdx.z;
+        while (idx < x1 && idy < y1){
           xformFun(input, idx, idy, multiIdx);
-      idx += (blockDim.x << BLOCK_SIZE_LOG2);
-      }
+          idx += (blockDim.x << BLOCK_SIZE_LOG2);
+          }
+
+    }
 }
 
 
@@ -255,14 +314,22 @@ static inline void call2dXformKernel(INPUTTYPE input, TRANSFORMFUNTYPE xformFun,
     if ((grid.x << BLOCK_SIZE_LOG2) < sizex)
         grid.x++;
     grid.y = sizey;
+    int cuda_arch = DetectCudaArch();
     if(sizey > 0 && nMulti > 0 && x1 > x0){
-        dXformKernel2d<<<grid, block, 0, CURRENT_STREAM()>>>(input, xformFun, x0, x1, y0, y1, nMulti);
+        if (cuda_arch >= 200){
+            grid.z = nMulti;
+            dXformKernel2d<false><<<grid, block, 0, CURRENT_STREAM()>>>(input, xformFun, x0, x1, y0, y1, nMulti);
+        }
+        else {
+            dXformKernel2d<true><<<grid, block, 0, CURRENT_STREAM()>>>(input, xformFun, x0, x1, y0, y1, nMulti);
+        }
+    }
 #if P_ERROR_CHECKS
         cudaError_t error = cudaGetLastError();
         if (error != cudaSuccess)
            printf("Cudaerror = %s\n", cudaGetErrorString( error ));
 #endif
-    }
+
 }
 
 #define PARALLEL_KERNEL_BEGIN2D(NAME, INPUTTYPE, INPUT, IDX1, IDX2, MULTIINDEX)                                 \

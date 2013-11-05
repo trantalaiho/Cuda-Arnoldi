@@ -225,6 +225,8 @@ int main(int argc, char *argv[]) {
   else devmat = NULL;
   cudaMemcpy(devinit_vec, init_vec, sizeof(scomplex_t) * N, cudaMemcpyHostToDevice);
   if (!fast_matmul) cudaMemcpy(devmat, mat, sizeof(scomplex_t) * N * N, cudaMemcpyHostToDevice);
+  // Make sure that L1 cache is preferred over shared memory (The algorithms use very little shared)
+  cudaThreadSetCacheConfig(cudaFuncCachePreferL1);
 #else
   devinit_vec = init_vec;
   devmat = mat;
