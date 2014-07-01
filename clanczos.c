@@ -1,11 +1,11 @@
 /*
- * carnoldi.c
+ * clanczos.c
  *
- *  Created on: 7.8.2013
+ *  Created on: 1.7.2014
  *      Author: Teemu Rantalaiho
  *
  *
- *  Copyright 2013 Teemu Rantalaiho
+ *  Copyright 2014 Teemu Rantalaiho
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@
 #define TRACE_STATISTICS	1
 #include <sys/time.h>
 #include <sys/resource.h>
-double cputime(void)
+static double cputime(void)
 {
   struct rusage resource;
   //extern int getrusage();
@@ -57,7 +57,8 @@ typedef struct fieldentry_s
     float im;
 } fieldentry;
 
-#define MANGLE(X) carnoldi_##X
+#define MANGLE(X) clanczos_##X
+#define USE_LANCZOS
 #include "arnoldi_generic.h"
 
 #ifndef PRINT_FREE
@@ -251,7 +252,7 @@ int backup_matmul(void* matctx, void* src, void* dst){
 }
 
 // Note - with a normal vector of complex numbers, use nMulti = 1, stride = 0
-int run_carnoldi(
+int run_clanczos(
         scomplex_t* results, const void* init_vec, void** rvecs, int size, int nMulti, int stride,
         int n_eigs, int n_extend, double tolerance, int* maxIter,
         const arnoldi_abs_int* functions, arnmode mode)

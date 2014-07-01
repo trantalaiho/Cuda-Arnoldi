@@ -166,10 +166,10 @@ template <typename INDEXTYPE>
 struct dcomplexMatMulFun {
     INDEXTYPE stride;
     __device__
-    dcomplex_t operator()( const dcomplex_t* data, INDEXTYPE x, INDEXTYPE y, dcomplex_t* src){
+    dcomplex_t operator()( const dcomplex_t* data, INDEXTYPE x, INDEXTYPE y, dcomplex_t* src, int srcx){
         dcomplex_t m_ij = data[y*stride + x];
         dcomplex_t res;
-        dcomplex_t a = src[x];
+        dcomplex_t a = src[srcx];
         res.re = m_ij.re * a.re - m_ij.im * a.im;
         res.im = m_ij.re * a.im + m_ij.im * a.re;
         return res;

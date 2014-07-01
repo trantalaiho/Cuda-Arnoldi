@@ -27,6 +27,26 @@
 
 #include <cuda_runtime_api.h>
 
+/*
+ * Signatures:
+ *
+ *   TRANSFORMFUNTYPE:
+ *     struct <name>{
+ *       OUTPUTTYPE operator()( INPUTTYPE input, INDEXTYPE x, INDEXTYPE y, SRCTYPE src, INDEXTYPE srcx);
+ *     };
+ *     // NOTE: when srcx = (transpose==true) ? y : x;
+ *   SUMFUNTYPE:
+ *     struct <name>{
+ *       OUTPUTTYPE operator()( OUTPUTTYPE x, OUTPUTTYPE y);
+ *     };
+ *   STOREFUNTYPE:
+ *     struct <name> {
+ *       void operator()( DSTTYPE result, INDEXTYPE i, OUTPUTTYPE var){
+ *          result[i] = var;
+ *       }
+ *     };
+ *
+ */
 template <typename OUTPUTTYPE, typename TRANSFORMFUNTYPE, typename INDEXTYPE, typename INPUTTYPE, typename SUMFUNTYPE, typename STOREFUNTYPE, typename SRCTYPE, typename DSTTYPE>
 static inline
 cudaError_t callFullMatMul(
@@ -75,7 +95,7 @@ void callFullMatmulKernel(
     OUTPUTTYPE myRes;
     int stride = gridDim.x << MM_BLOCKSIZE_LOG2;
     if (x < sizex && y < sizey){
-        myRes = xformFunctor(input, x, y, src);
+        myRes = xformFunctor(input, x, y, src, x);
         x += stride;
     }
 //#ifndef UNROLL_NLOG2_CUDA_STEPS
@@ -89,13 +109,13 @@ void callFullMatmulKernel(
     for (int fstep = 0; fstep < nFullSteps; fstep++){
 #pragma unroll
         for (int substep = 0; substep < NUNROLL; substep++){
-            OUTPUTTYPE tmpres = xformFunctor(input, x, y, src);
+            OUTPUTTYPE tmpres = xformFunctor(input, x, y, src, x);
             myRes = sumFunctor(myRes, tmpres);
             x += stride;
         }
     }
     while (x < sizex){
-        OUTPUTTYPE tmpres = xformFunctor(input, x, y, src);
+        OUTPUTTYPE tmpres = xformFunctor(input, x, y, src, x);
         myRes = sumFunctor(myRes, tmpres);
         x += stride;
     }
@@ -105,7 +125,7 @@ void callFullMatmulKernel(
         __syncthreads();
         if (sizex < MM_BLOCKSIZE){
             if (tid == 0){
-                for (int i = 1; i < (sizex < MM_BLOCKSIZE ? sizex : MM_BLOCKSIZE); i++)
+                for (int i = 1; i < sizex; i++)
                     myRes = sumFunctor(myRes, tmparr[i]);
             }
         } else {
@@ -262,8 +282,8 @@ template <typename INDEXTYPE, typename OUTPUTTYPE, typename TRANSFORMFUNTYPE, ty
 struct FullMatMulTransposeWrapper {
 	TRANSFORMFUNTYPE userFunctor;
 	inline __device__
-    OUTPUTTYPE operator()( INPUTTYPE input, INDEXTYPE x, INDEXTYPE y, SRCTYPE src){
-        return userFunctor(input, y, x, src);
+    OUTPUTTYPE operator()( INPUTTYPE input, INDEXTYPE x, INDEXTYPE y, SRCTYPE src, INDEXTYPE srcx){
+        return userFunctor(input, y, x, src, x);
     }
 };
 
@@ -298,9 +318,9 @@ template <typename INDEXTYPE, typename RADIXTYPE>
 struct floatMatMulFun {
     INDEXTYPE stride;
     __device__
-    RADIXTYPE operator()( const RADIXTYPE* data, INDEXTYPE x, INDEXTYPE y, const RADIXTYPE* src){
+    RADIXTYPE operator()( const RADIXTYPE* data, INDEXTYPE x, INDEXTYPE y, const RADIXTYPE* src, INDEXTYPE srcx){
         RADIXTYPE m_ij = data[y*stride + x];
-        RADIXTYPE res = m_ij*src[x];
+        RADIXTYPE res = m_ij*src[srcx];
         return res;
     }
 };

@@ -3,10 +3,10 @@
 
 
 /**** arnoldi_generic.h - Implicitly Restarted Arnoldi Method ********
- * David Weir, Joni Suorsa and Teemu Rantalaiho 2011-13              *
+ * David Weir, Joni Suorsa and Teemu Rantalaiho 2011-14              *
  *********************************************************************
  *
- *  Copyright 2011-2013 David Weir, Joni Suorsa and Teemu Rantalaiho
+ *  Copyright 2011-2014 David Weir, Joni Suorsa and Teemu Rantalaiho
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@
 
 
 // Print some of the intermediate steps
-//#define EIG_DEBUG
+// #define EIG_DEBUG
 // #define EIG_DEBUG_FULL
 // #define GIVENS_DEBUG
 // #define SHIFT
@@ -56,6 +56,14 @@ static int s_nMADDs = 0;
 static int s_nGivenss = 0;
 static int s_nDefRotate = 0;
 static int s_nShiftRotate = 0;
+#endif
+
+
+// TODO: Investigate when to use each codepath
+#ifdef CUDA
+#define USE_POST_ROTATE_CODEPATH 1
+#else
+#define USE_POST_ROTATE_CODEPATH 0
 #endif
 
 
@@ -810,6 +818,49 @@ void fieldvec_scalar_mult_V(
   }
 #endif
 }
+
+
+PARALLEL_KERNEL_BEGIN(wvec_madd, wvec_inputout, input, i, multiIdx)
+{
+  fieldentry s1, s2, res;
+  get_fieldEntry(input.s1, i, &s1, multiIdx, input.stride);
+  get_fieldEntry(input.s2, i, &s2, multiIdx, input.stride);
+  fieldEntry_scalar_madd(&s1, input.scalar, &s2, &res );
+  set_fieldEntry(input.out, i, &res, multiIdx, input.stride);
+}
+PARALLEL_KERNEL_END()
+
+// This is res = s1 + scalar * s2
+static
+void fieldvec_scalar_madd_V(
+        const fieldtype * s1,
+        radix scalar,
+        fieldtype * s2,
+        fieldtype * res,
+        multisize size )
+{
+#ifdef TRACE_STATISTICS
+    double t0 = s_cputimef ? s_cputimef() : 0.0;
+#endif
+  wvec_inputout input;
+  input.s1 = s1;
+  input.s2 = s2;
+  input.scalar = scalar;
+  input.out = res;
+  input.stride = size.stride;
+  KERNEL_CALL(wvec_madd, input, 0, size.size, size.nMulti);
+#ifdef TRACE_STATISTICS
+  if (s_cputimef){
+#ifdef CUDA
+      cudaDeviceSynchronize();
+#endif
+      s_parallelT += s_cputimef() - t0;
+  }
+#endif
+}
+
+
+
 
 
 
@@ -1706,6 +1757,193 @@ cleanup:
 
 
 
+PARALLEL_KERNEL_BEGIN(wvec_subtwo, wvec_inputout, input, i, multiIdx)
+{
+    //d_if_sf_site(i) // TODO: How to easily incorporate special sites to the scheme?
+    {
+      fieldentry s1, s2, z;
+      get_fieldEntry(input.out, i, &z, multiIdx, input.stride);
+      get_fieldEntry(input.s2, i, &s2, multiIdx, input.stride);
+      get_fieldEntry(input.s1, i, &s1, multiIdx, input.stride);
+      fieldEntry_complex_madd(&z, input.cscalar, &s2, &z);
+      fieldEntry_scalar_madd(&z, input.scalar, &s1, &z);
+      set_fieldEntry(input.out, i, &z, multiIdx, input.stride);
+    }
+}
+PARALLEL_KERNEL_END()
+
+
+static
+void fieldvec_subtwo(
+        fieldtype * z,
+        radix scalar,
+        const fieldtype * s1,
+        lcomplex cscalar,
+        const fieldtype * s2,
+        multisize size )
+{
+#ifdef TRACE_STATISTICS
+    double t0 = s_cputimef ? s_cputimef() : 0.0;
+    s_nMADDs++;
+#endif
+  wvec_inputout input;
+  input.s1 = s1;
+  input.scalar = -scalar;
+  input.cscalar.real = -cscalar.real;
+  input.cscalar.imag = -cscalar.imag;
+  input.s2 = s2;
+  input.out = z;
+  input.stride = size.stride;
+  KERNEL_CALL(wvec_subtwo, input, 0, size.size, size.nMulti);
+#ifdef TRACE_STATISTICS
+  if (s_cputimef){
+#ifdef CUDA
+      cudaDeviceSynchronize();
+#endif
+      s_parallelT += s_cputimef() - t0;
+  }
+#endif
+}
+
+
+
+
+
+/*
+ * Recompute the Lanczos factorisation.
+ *
+ * Calculates out to a (k+p)*(k+p) Tridiagonal given a k*k one
+ *
+ *
+ * This routine has nothing to do with the restart strategy.
+ */
+static
+int lanczos_step(
+    int k, int p, fieldtype **V, cmatrix *H,
+    fieldtype *f, multisize size)
+{
+#ifdef TRACE_STATISTICS
+  s_nArnSteps++;
+  double t0 = s_cputimef ? s_cputimef() : 0.0;
+  double t1;
+#endif
+
+  int i, j;
+  radix beta;
+  lcomplex alpha, alpha2;
+  int error = 0;
+
+  // initialise v, z
+  fieldtype *z = new_fieldtype(size.size, size.nMulti);
+
+
+  //lcomplex* Vdotzs = (lcomplex*)s_mallocf(sizeof(lcomplex) * H->n);
+
+
+  if (!z){
+      error = -1;
+      goto cleanup;
+  }
+
+
+  /*
+   * on entry, we have an Lanczos factorisation:
+   * A V = V H + [0,0,(k-1 times),f]
+   *
+   * We compute steps k to p of this iteration
+   * so we assume the matrices are at least that big
+   * and that V, H and f have been set up for us
+   */
+
+
+  // Zero rest of Tridiagonal - TODO: Optimize to sparse format?
+  for(i=k;i<(k+p);i++) {
+    for(j=0;j<(k+p);j++) {
+      H->e[i][j].real = 0.0;
+      H->e[i][j].imag = 0.0;
+
+      H->e[j][i].real = 0.0;
+      H->e[j][i].imag = 0.0;
+    }
+  }
+
+  // On entry, V has i columns
+  for(i=k;i<(k+p);i++) {
+
+#ifdef EIG_DEBUG
+      printf("Lanczos step %d/%d\n",i,(k+p)-1);
+#endif
+
+    beta = sqrt(fieldvec_magsq_V(f, size));
+
+    fieldvec_scalar_mult_V(f, 1.0/beta, V[i]/*v*/, size);
+
+    //fieldvec_copy_V(v, V[i], size);
+
+    H->e[i][i-1].real = beta;
+    H->e[i][i-1].imag = 0.0;
+    H->e[i-1][i].real = beta;
+    H->e[i-1][i].imag = 0.0;
+
+#ifndef SHIFT
+    // NOTE: Assumes Mat_mult does not change V[i]
+    Mat_mult(V[i]/*v*/,z);
+#else
+    shift_mult(V[i]/*v*/,z,size);
+#endif
+
+
+    alpha = fieldvec_cdot_V(V[i], z, size);
+    H->e[i][i] = alpha;
+
+    /*if (i > 0)
+        fieldvec_scalar_madd_V(z, -beta, V[i-1], z, size);
+    fieldvec_complex_msub_V(z, alpha, V[i], z, size);
+    */
+    fieldvec_subtwo(z, beta, V[i-1], alpha, V[i], size);
+
+    // First, should determine *IF* reorthogonalisation is necessary
+    // Also ought to deal with invariant subspaces.
+    // Reorthogonalize. Only do one step; could do more.
+    // Effectively a modified Gram-Schmidt step
+    // NOTE: This correction fails due to finite machine precision stuffses.
+    //multi_fvec_cdot_V(V, z, i+1, H->n, Vdotzs, size);
+#ifdef TRACE_STATISTICS
+    t1 = s_cputimef ? s_cputimef() : 0.0;
+    s_nCDotProds++;
+    s_nMADDs++;
+#endif
+
+    alpha = fieldvec_cdot_V(V[0], z, size);
+    for(j=0;j<i;j++) {
+        alpha2 = H->e[j][i];
+        if (i==j || j==i-1 || j==i+1)
+            H->e[j][i] = caddf(&alpha, &alpha2);
+        field_vec_msub_dot_V(V[j], &alpha, z, V[j+1], size);
+    }
+    fieldvec_complex_msub_V(z, alpha, V[i], z, size);
+
+    fieldvec_copy_V(z,f,size);
+#ifdef TRACE_STATISTICS
+    if (s_cputimef)
+        s_orthT += s_cputimef() - t1;;
+#endif
+
+  }
+#ifdef TRACE_STATISTICS
+  if (s_cputimef)
+      s_totArnStepT += s_cputimef() - t0;
+#endif
+cleanup:
+  if (z) free_fieldtype(z);
+  return error;
+}
+
+
+
+
+
+
 
 
 
@@ -2405,8 +2643,8 @@ int deflate(fieldtype **eig_vec,
       //tot += cabs_sqf(z[k-2]);
       tot += CABSF(&z[k-2])*CABSF(&z[k-2]);
     }
-    
-    invsqrt_tot = 1.0/sqrt(tot);    
+
+    invsqrt_tot = 1.0/sqrt(tot);
 
     // 3.2
     for(k=2;k<j;k++) {
@@ -2598,8 +2836,6 @@ int arnoldi(fieldtype **eig_vec,// vectors
   //lcomplex *y  = NULL;
   lcomplex y[n_eigs+n_eigs_extend];
 
-  lcomplex hdet, ct;
-
   lcomplex theta;
 
   int deflated_this_time = 0;
@@ -2702,8 +2938,11 @@ int arnoldi(fieldtype **eig_vec,// vectors
   printf("Calling arnoldi_step wanting %d eigs\n",n_eigs);
 #endif
 
-
+#ifdef USE_LANCZOS
+  error = lanczos_step(1, n_eigs-1, eig_vec, &h, f, size);
+#else
   error = arnoldi_step(1, n_eigs-1, eig_vec, &h, f, size);
+#endif
   if (error != 0){
       error = 10 * error - 3;
       goto cleanup;
@@ -2750,7 +2989,11 @@ int arnoldi(fieldtype **eig_vec,// vectors
     printf("Extending to %d+%d factorisation\n",n_eigs,n_eigs_extend);
 #endif
 
+#ifdef USE_LANCZOS
+     error = lanczos_step(n_eigs, n_eigs_extend, eig_vec, &h, f, size);
+#else
      error = arnoldi_step(n_eigs, n_eigs_extend, eig_vec, &h, f, size);
+#endif
      if (error != 0){
          error = 10 * error - 4;
          goto cleanup;
@@ -2789,19 +3032,21 @@ int arnoldi(fieldtype **eig_vec,// vectors
      * is sufficiently small, but there is no way to evaluate
      * the error for a nonsymmetric eigenvalue problem.
      */
-    hdet.real = 1.0;
-    hdet.imag = 1.0;
-
-    for(j=0;j<(rsmall.n);j++) {
-      ct = cmulf(&hdet,&hsmall.e[j][j]);
-      hdet = ct;
-    }
-
-
 #ifdef EIG_DEBUG
-    printf("hdet is %g\n", CABSF(&hdet));
-#endif
+    {
+        lcomplex hdet, ct;
 
+        hdet.real = 1.0;
+        hdet.imag = 1.0;
+
+        for(j=0;j<(rsmall.n);j++) {
+          ct = cmulf(&hdet,&hsmall.e[j][j]);
+          hdet = ct;
+        }
+
+        printf("hdet is %g\n", CABSF(&hdet));
+    }
+#endif
     deflated_this_time = 0;
 
     for(j=0;j<(rsmall.n);j++) {
@@ -2925,7 +3170,6 @@ int arnoldi(fieldtype **eig_vec,// vectors
       q[j].imag = 0.0;
     }
 
-#define USE_POST_ROTATE_CODEPATH 1
 
     q[n_eigs + n_eigs_extend - 1].real = 1.0;
     q[n_eigs + n_eigs_extend - 1].imag = 0.0;
@@ -2994,7 +3238,7 @@ int arnoldi(fieldtype **eig_vec,// vectors
           {
               #if 1
                 right_givens(&Qnew, givens);
-              #else 
+              #else
                 cmat_mult(&Qnew,&Q,&R);
                 cmat_copy(&R,&Qnew);
               #endif

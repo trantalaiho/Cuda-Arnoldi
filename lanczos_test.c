@@ -5,9 +5,9 @@
 #include "arnoldi.h"
 
 /*
- * arnoldi_test.c - David Weir and Teemu Rantalaiho 2013
+ * lanczos_test.c - Teemu Rantalaiho 2014
  *
- *  Copyright 2013 David Weir and Teemu Rantalaiho
+ *  Copyright 2013-2014 David Weir and Teemu Rantalaiho
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -26,20 +26,20 @@
  *
  *
  * To compile CPU-version:
- *   gcc -O4 arnoldi_test.c carnoldi.c clanczos.c -o arnoldi_test.out -llapack -lm
+ *   gcc -O4 lanczos_test.c slanczos.c -o lanczos_test.out -llapack -lm
  * Debug symbols and no optimizations:
- *   gcc -g arnoldi_test.c  carnoldi.c clanczos.c -o arnoldi_test.debug -llapack -lm
+ *   gcc -g lanczos_test.c slanczos.c -o lanczos_test.debug -llapack -lm
  * To compile GPU-version:
- *   nvcc -DCUDA --x cu -O4 -arch=<your arch - for example sm_20> arnoldi_test.c carnoldi.c clanczos.c -o arnoldi_test.gpu -llapack -lcudart
+ *   nvcc -DCUDA --x cu -O4 -arch=<your arch - for example sm_20> lanczos_test.c slanczos.c -o lanczos_test.gpu -llapack -lcudart
  * Debug symbols and no optimizations on CPU-side:
- *   nvcc -DCUDA --x cu -g arnoldi_test.c carnoldi.c clanczos.c -o arnoldi_test.dbggpu -llapack -lcudart
+ *   nvcc -DCUDA --x cu -g lanczos_test.c slanczos.c -o lanczos_test.dbggpu -llapack -lcudart
  *
  *   NOTE: with older versions of nvcc it seems that you have to rename the source-files to .cu ending for some odd reason
  *
  * To Compile lib-arcpack++ - version:
- *   g++ -O4 -DARPACKPP arnoldi_test.c carnoldi.c clanczos.c -o arnoldi_test.out_arp -llapack -lm -larpack++ -I<path to lib-arpack++ headers> -lblas -larpack
+ *   g++ -O4 -DARPACKPP lanczos_test.c slanczos.c -o lanczos_test.out_arp -llapack -lm -larpack++ -I<path to lib-arpack++ headers> -lblas -larpack
  * for example
- *   g++ -O4 -DARPACKPP arnoldi_test.c carnoldi.c clanczos.c -o arnoldi_test.out_arp -llapack -lm -larpack++ -I/usr/include/arpack++ -lblas -larpack
+ *   g++ -O4 -DARPACKPP lanczos_test.c slanczos.c -o lanczos_test.out_arp -llapack -lm -larpack++ -I/usr/include/arpack++ -lblas -larpack
  *
  */
 
@@ -52,33 +52,31 @@
 #define MANGLE(X) X
 #include "apar_defs.h"
 
+#define radix float
+
 typedef struct mvec_in_s
 {
-    const scomplex_t* src;
-    scomplex_t* dst;
+    const radix* src;
+    radix* dst;
     int size;
 } mvec_in;
 
 PARALLEL_KERNEL_BEGIN(matmul_kernel, mvec_in, in, i, skip)
 {
-    scomplex_t res;
-    res.re = in.src[i].re;
-    res.im = in.src[i].im;
+    radix res;
+    res= in.src[i];
     if (i > 0){
-        res.re += in.src[i-1].re;
-        res.im += in.src[i-1].im;
+        res += in.src[i-1];
     }
     if (i < in.size - 1)
     {
-        res.re += in.src[i+1].re;
-        res.im += in.src[i+1].im;
+        res += in.src[i+1];
     }
-    in.dst[i].re = res.re;
-    in.dst[i].im = res.im;
+    in.dst[i] = res;
 }
 PARALLEL_KERNEL_END()
 
-static void matmulfun(void* matdata, const scomplex_t* src, scomplex_t* dst){
+static void matmulfun(void* matdata, const radix* src, radix* dst){
     int size = *(int*)matdata;
     mvec_in input;
     input.dst = dst;
@@ -88,6 +86,7 @@ static void matmulfun(void* matdata, const scomplex_t* src, scomplex_t* dst){
 }
 
 #if defined(ARPACKPP)
+#error Implementation pending -- sorry...
 #include <arscomp.h>
 class OurMatrix {
 private:
@@ -125,7 +124,7 @@ int arpackpp_solve(int size, scomplex_t* results, int n_eigs, scomplex_t* initVe
 
 
 static void printUsage(void){
-    printf("Simple test to find Eigenvalues of matrix A_ij = delta_ij + delta_i(j+1) + delta_i(j-1)\n\n using the Arnoldi method.");
+    printf("Simple test to find Eigenvalues of matrix A_ij = delta_ij + delta_i(j+1) + delta_i(j-1)\n\n using the Lanczos method.");
     printf("Options: \n");
     printf("\t\t --n <Integer>      - Size of the system - default 20 \n");
     printf("\t\t --iter <Integer>   - Max number of Arnoldi iterations - default 100\n");
@@ -134,7 +133,6 @@ static void printUsage(void){
     printf("\t\t --n_ext <Integer>  - Number of extended eigenvalues to help the algorithm - default 2 \n");
     printf("\t\t --fast_matmul      - Use a custom (sparse) matrix-vector multiplication function instead of a full matrix\n");
     printf("\t\t --mode <Integer>   - In which mode to run: 1=Largest Magnitude, 2=Largest real part, 3=Small mag, 4=Small real, default=4\n");
-    printf("\t\t --lanczos          - Solve using the Lanczos method instead of Arnoldi\n");
     printf("\n\n");
 }
 
@@ -169,10 +167,10 @@ int main(int argc, char *argv[]) {
   int error = 0;
 
   // initialisation vector
-  scomplex_t* init_vec;
-  scomplex_t* devinit_vec;
-  scomplex_t* devmat = NULL;;
-  scomplex_t* mat = NULL;
+  radix* init_vec;
+  radix* devinit_vec;
+  radix* devmat = NULL;;
+  radix* mat = NULL;
 
   // create function struct
   arnoldi_abs_int functions;
@@ -194,41 +192,37 @@ int main(int argc, char *argv[]) {
           mode = (arnmode)atoi(argv[++i]);
       else if (strcmp(argv[i], "--fast_matmul") == 0)
           fast_matmul = 1;
-      else if (strcmp(argv[i], "--lanczos") == 0)
-          lanczos = 1;
   }
   olditer = maxiter;
 
-  init_vec = (scomplex_t *)malloc(N*sizeof(scomplex_t));
+  init_vec = (radix *)malloc(N*sizeof(radix));
   results = (scomplex_t *)malloc(n_eigs*sizeof(scomplex_t));
 
   for(i=0; i<N; i++) {
     // something naive for initial vector
-    init_vec[i].re = drand48() - 0.5;
-    init_vec[i].im = drand48() - 0.5;
+    init_vec[i] = drand48() - 0.5;
     // Don't worry - this will be normalized by the Arnoldi algorithm
   }
 
   // tridiagonal matrix - l_s = 1 + 2 cos ( s*pi/ (m+1)) where m is the size of the matrix
   if (!fast_matmul){
-      mat = (scomplex_t *)malloc(N*N*sizeof(scomplex_t));
+      mat = (radix *)malloc(N*N*sizeof(radix));
       for(i=0; i<N; i++) {
         for(j=0; j<N; j++) {
           if (i == j || (i == j+1) || (i == j-1))
-              mat[i*N + j].re = 1.0;
+              mat[i*N + j] = 1.0;
           else
-              mat[i*N + j].re = 0.0;
-          mat[i*N + j].im = 0.0;
+              mat[i*N + j] = 0.0;
         }
       }
   }
 
 #if defined(CUDA)
-  cudaMalloc(&devinit_vec, N*sizeof(scomplex_t));
-  if (!fast_matmul) cudaMalloc(&devmat, N*N*sizeof(scomplex_t));
+  cudaMalloc(&devinit_vec, N*sizeof(radix));
+  if (!fast_matmul) cudaMalloc(&devmat, N*N*sizeof(radix));
   else devmat = NULL;
-  cudaMemcpy(devinit_vec, init_vec, sizeof(scomplex_t) * N, cudaMemcpyHostToDevice);
-  if (!fast_matmul) cudaMemcpy(devmat, mat, sizeof(scomplex_t) * N * N, cudaMemcpyHostToDevice);
+  cudaMemcpy(devinit_vec, init_vec, sizeof(radix) * N, cudaMemcpyHostToDevice);
+  if (!fast_matmul) cudaMemcpy(devmat, mat, sizeof(radix) * N * N, cudaMemcpyHostToDevice);
   // Make sure that L1 cache is preferred over shared memory (The algorithms use very little shared)
   cudaThreadSetCacheConfig(cudaFuncCachePreferL1);
 #else
@@ -255,23 +249,18 @@ int main(int argc, char *argv[]) {
 #if defined(ARPACKPP)
   arpackpp_solve(N, results, n_eigs, init_vec, maxiter, tol, n_extend, mode);
 #else
-  if (lanczos)
       error =
-        run_clanczos(results, devinit_vec, NULL, N, 1, 0,
-                     n_eigs, n_extend, tol, &maxiter, &functions, mode);
-  else
-       error =
-        run_carnoldi(results, devinit_vec, NULL, N, 1, 0,
+        run_slanczos(results, devinit_vec, NULL, N, 1, 0,
                      n_eigs, n_extend, tol, &maxiter, &functions, mode);
 #endif
 #if !defined(ARPACKPP)
   if (error == 0){
-      printf("Arnoldi method complete in %d iterations without errors\n", maxiter);
+      printf("Lanczos method complete in %d iterations without errors\n", maxiter);
       if (maxiter == olditer)
-          printf("Warning: All iterations exhausted - Arnoldi method didn't converge!\n");
+          printf("Warning: All iterations exhausted - Lanczos method didn't converge!\n");
 #else
       if (error == 0){
-          printf("Arnoldi method complete\n");
+          printf("Lanczos method complete\n");
 #endif
       // print results
 
@@ -307,7 +296,7 @@ int main(int argc, char *argv[]) {
         printf("a_eig %d: %.15f + %.15fi\n", i, ls, 0.0);
       }
   } else {
-      printf("Arnoldi method ERROR = %d\n", error);
+      printf("Lanczos method ERROR = %d\n", error);
   }
 
   free(results);

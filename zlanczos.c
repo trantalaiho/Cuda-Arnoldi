@@ -1,11 +1,11 @@
 /*
- * carnoldi.c
+ * zlanczos.c
  *
- *  Created on: 7.8.2013
+ *  Created on: 1.7.2014
  *      Author: Teemu Rantalaiho
  *
  *
- *  Copyright 2013 Teemu Rantalaiho
+ *  Copyright 2014 Teemu Rantalaiho
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -24,40 +24,23 @@
 
 #include "arnoldi.h"
 
-#ifdef TIMER
-#define TRACE_STATISTICS	1
-#include <sys/time.h>
-#include <sys/resource.h>
-double cputime(void)
-{
-  struct rusage resource;
-  //extern int getrusage();
-  extern int getrusage(int who, struct rusage *usage);
 
-  getrusage(RUSAGE_SELF,&resource);
-  return(resource.ru_utime.tv_sec + 1e-6*resource.ru_utime.tv_usec +
-         resource.ru_stime.tv_sec + 1e-6*resource.ru_stime.tv_usec);
-
-}
-
-#endif
-
-
-#define RADIX_SIZE 32
+#define RADIX_SIZE 64
 
 // For normal complex types
 typedef struct fieldtype_s
 {
-   float re;
-   float im;
+   double re;
+   double im;
 } fieldtype;
 typedef struct fieldentry_s
 {
-    float re;
-    float im;
+   double re;
+   double im;
 } fieldentry;
 
-#define MANGLE(X) carnoldi_##X
+#define MANGLE(X) zlanczos_##X
+#define USE_LANCZOS
 #include "arnoldi_generic.h"
 
 #ifndef PRINT_FREE
@@ -181,23 +164,23 @@ static int s_size = 0;
 #include "cuda_matmul.h"
 
 template <typename INDEXTYPE>
-struct complexMatMulFun {
+struct dcomplexMatMulFun {
     INDEXTYPE stride;
     __device__
-    scomplex_t operator()( const scomplex_t* data, INDEXTYPE x, INDEXTYPE y, scomplex_t* src, int srcx){
-        scomplex_t m_ij = data[y*stride + x];
-        scomplex_t res;
-        scomplex_t a = src[srcx];
+    dcomplex_t operator()( const dcomplex_t* data, INDEXTYPE x, INDEXTYPE y, dcomplex_t* src, int srcx){
+        dcomplex_t m_ij = data[y*stride + x];
+        dcomplex_t res;
+        dcomplex_t a = src[srcx];
         res.re = m_ij.re * a.re - m_ij.im * a.im;
         res.im = m_ij.re * a.im + m_ij.im * a.re;
         return res;
     }
 };
 
-struct complexSumFun {
+struct dcomplexSumFun {
     __device__
-    scomplex_t operator()( scomplex_t a, scomplex_t b){
-        scomplex_t res;
+    dcomplex_t operator()( dcomplex_t a, dcomplex_t b){
+        dcomplex_t res;
         res.re = a.re + b.re;
         res.im = a.im + b.im;
         return res;
@@ -218,22 +201,22 @@ int backup_matmul(void* matctx, void* src, void* dst){
     int error       = 0;
     int size        = s_size;
     fullmat_t* mat  = (fullmat_t*)matctx;
-    scomplex_t* m   = (scomplex_t*)mat->data;
-    scomplex_t* x0  = (scomplex_t*)src;
-    scomplex_t* y   = (scomplex_t*)dst;
+    dcomplex_t* m   = (dcomplex_t*)mat->data;
+    dcomplex_t* x0  = (dcomplex_t*)src;
+    dcomplex_t* y   = (dcomplex_t*)dst;
 #ifndef CUDA
     // Trivial implementation - just for backup, replace at will with sgemv
     int i;
     int hopstride = mat->stride - size;
-    scomplex_t* lim = x0 + size;
+    dcomplex_t* lim = x0 + size;
     for (i = 0; i < size; i++){
-        scomplex_t* x = x0;
-        scomplex_t res;
+        dcomplex_t* x = x0;
+        dcomplex_t res;
         res.im = 0.0;
         res.re = 0.0;
         while (x < lim){
-            scomplex_t a = *m++;
-            scomplex_t b = *x++;
+            dcomplex_t a = *m++;
+            dcomplex_t b = *x++;
             res.re += a.re * b.re - a.im * b.im;
             res.im += a.re * b.im + a.im * b.re;
         }
@@ -241,25 +224,25 @@ int backup_matmul(void* matctx, void* src, void* dst){
         m += hopstride;
     }
 #else
-    complexMatMulFun<int> matmulf;
-    complexStoreFun<int, scomplex_t> storef;
-    complexSumFun cmplxsumf;
+    dcomplexMatMulFun<int> matmulf;
+    complexStoreFun<int, dcomplex_t> storef;
+    dcomplexSumFun cmplxsumf;
     matmulf.stride = mat->stride;
-    error = (int)callFullMatMul<scomplex_t>(m, matmulf, cmplxsumf, storef, size, size, x0, y, false, 0, true);
+    error = (int)callFullMatMul<dcomplex_t>(m, matmulf, cmplxsumf, storef, size, size, x0, y, false, 0, true);
 #endif
     return error;
 }
 
 // Note - with a normal vector of complex numbers, use nMulti = 1, stride = 0
-int run_carnoldi(
-        scomplex_t* results, const void* init_vec, void** rvecs, int size, int nMulti, int stride,
+int run_zlanczos(
+        dcomplex_t* results, const void* init_vec, void** rvecs, int size, int nMulti, int stride,
         int n_eigs, int n_extend, double tolerance, int* maxIter,
         const arnoldi_abs_int* functions, arnmode mode)
 {
     int error = 0;
 
     fieldtype** e_vecs = (fieldtype**)s_mallocf(sizeof(fieldtype*) * (n_eigs + n_extend));
-    scomplex_t* e_vals = (scomplex_t*)s_mallocf(sizeof(scomplex_t) * (n_eigs + n_extend));
+    dcomplex_t* e_vals = (dcomplex_t*)s_mallocf(sizeof(dcomplex_t) * (n_eigs + n_extend));
     int i;
     if (!(e_vecs && e_vals)){
         error = -1;
@@ -282,8 +265,8 @@ int run_carnoldi(
         in.stride = stride;
         KERNEL_CALL(init_arn_vec, in, 0, size, nMulti);
     }
-    // Set necessary function pointers
 
+    // Set necessary function pointers
     s_mulf = (mv_mul_t)functions->mvecmulFun;
     if (!s_mulf){
         if (!functions->fullmat.data){
@@ -299,9 +282,6 @@ int run_carnoldi(
 
     scalar_reduction_f = functions->scalar_redFun;
     complex_reduction_f = functions->complex_redFun;
-#ifdef TIMER
-    s_cputimef = &cputime;
-#endif
     error = run_arnoldiabs(n_eigs, n_extend, tolerance, e_vecs, (lcomplex*)e_vals, maxIter, size, nMulti, stride, mode);
     if (error)
         goto cleanup;
