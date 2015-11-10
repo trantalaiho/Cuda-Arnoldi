@@ -192,8 +192,8 @@ lcomplex mycsqrt( const lcomplex * restrict z ){
 lcomplex c;
 radix theta,r;
     //r = sqrt(hypot(z->real,z->imag));
-    r = sqrt(hypot(z->real,z->imag));
-    theta = 0.5*atan2(z->imag,z->real);
+    r = (radix)sqrt(hypot(z->real,z->imag));
+    theta = (radix)(0.5*atan2(z->imag,z->real));
     c = ce_ithetaf(theta);
     c.real *=r; c.imag *= r;
     return(c);
@@ -245,7 +245,7 @@ static inline __host__ __device__
 lcomplex cdivf( const lcomplex * restrict a, const lcomplex * restrict b ) {
     lcomplex c;
     radix scale;
-    scale = 1.0/cabs_sqf(b);
+    scale = (radix)1.0/cabs_sqf(b);
     c.real = scale*((*a).real*(*b).real + (*a).imag*(*b).imag);
     c.imag = scale*((*a).imag*(*b).real - (*a).real*(*b).imag);
     return(c);
@@ -1663,7 +1663,7 @@ int arnoldi_step(
 
     beta = sqrt(fieldvec_magsq_V(f, size));
 
-    fieldvec_scalar_mult_V(f, 1.0/beta, V[i]/*v*/, size);
+    fieldvec_scalar_mult_V(f, (radix)(1.0/beta), V[i]/*v*/, size);
 
     //fieldvec_copy_V(v, V[i], size);
 
@@ -1876,7 +1876,7 @@ int lanczos_step(
 
     beta = sqrt(fieldvec_magsq_V(f, size));
 
-    fieldvec_scalar_mult_V(f, 1.0/beta, V[i]/*v*/, size);
+    fieldvec_scalar_mult_V(f, (radix)(1.0/beta), V[i]/*v*/, size);
 
     //fieldvec_copy_V(v, V[i], size);
 
@@ -1994,23 +1994,23 @@ void QRfactor_hessenberg_givens(cmatrix *restrict R, lcomplex *restrict givens)
       c.real = 0.0;
       c.imag = 0.0;
 
-      s.real = g.real/sqrt(g2);
-      s.imag = -1.0*g.imag/sqrt(g2);
+      s.real = g.real/(radix)sqrt(g2);
+      s.imag = (radix)-1.0*g.imag/(radix)sqrt(g2);
 
     } else {
 
       z1 = sqrt(f2 + g2);
-      signf.real = f.real/sqrt(f2);
-      signf.imag = f.imag/sqrt(f2);
+      signf.real = f.real/(radix)sqrt(f2);
+      signf.imag = f.imag/(radix)sqrt(f2);
 
-      c.real = sqrt(f2)/z1;
+      c.real = (radix)sqrt(f2)/(radix)z1;
       c.imag = 0.0;
 
       gco = conjgf(&g);
       top = cmulf(&signf, &gco);
 
-      s.real = top.real/z1;
-      s.imag = top.imag/z1;
+      s.real = (radix)top.real/(radix)z1;
+      s.imag = (radix)top.imag/(radix)z1;
     }
 
 #ifdef GIVENS_DEBUG
@@ -2328,7 +2328,7 @@ void cmat_ctrans(cmatrix *a,cmatrix *b){
   for (i=0;i<n;i++){
     for (j=0;j<n;j++){
       b->e[i][j].real = a->e[j][i].real;
-      b->e[i][j].imag = -1.0*a->e[j][i].imag;
+      b->e[i][j].imag = (radix)-1.0*a->e[j][i].imag;
     }
   }
 }
@@ -2495,7 +2495,7 @@ void orthQ(cmatrix *restrict Q, lcomplex *y) {
   // Step 1, first column is just y
   for(i=0; i<Q->n; i++) {
     Q->e[i][0].real = y[i].real/norm;
-    Q->e[i][0].imag = 1.0*y[i].imag/norm;
+    Q->e[i][0].imag = y[i].imag/norm;
   }
 
 
@@ -2525,14 +2525,14 @@ void orthQ(cmatrix *restrict Q, lcomplex *y) {
       for(i=0;i<j;i++) {
     gammastar = conjgf(&gamma);
     Q->e[i][j] = cmulf(&y[i],&gammastar);
-    Q->e[i][j].real = -1.0*Q->e[i][j].real;
-    Q->e[i][j].imag = -1.0*Q->e[i][j].imag;
+    Q->e[i][j].real = (radix)-1.0*Q->e[i][j].real;
+    Q->e[i][j].imag = (radix)-1.0*Q->e[i][j].imag;
       }
       Q->e[j][j] = cdivf(&tau0,&tau);
 
     } else {
-      Q->e[j-1][j].real = 1.0;
-      Q->e[j-1][j].imag = 0.0;
+      Q->e[j-1][j].real = (radix)1.0;
+      Q->e[j-1][j].imag = (radix)0.0;
     }
 
     tau0 = tau;
@@ -2644,12 +2644,12 @@ int deflate(fieldtype **eig_vec,
       tot += CABSF(&z[k-2])*CABSF(&z[k-2]);
     }
 
-    invsqrt_tot = 1.0/sqrt(tot);
+    invsqrt_tot = (radix)(1.0/sqrt(tot));
 
     // 3.2
     for(k=2;k<j;k++) {
       z[k-2].real = z[k-2].real * invsqrt_tot;
-      z[k-2].imag = -1.0*z[k-2].imag * invsqrt_tot;
+      z[k-2].imag = (radix)-1.0*z[k-2].imag * invsqrt_tot;
     }
 
     // 3.3
@@ -2818,12 +2818,18 @@ int arnoldi(fieldtype **eig_vec,// vectors
   cmatrix h, ritzvec, hdiag, R, Q, deflateQ, Hnew, Qnew;
   lcomplex temp/*, prod*/;
 
+
   // TODO: These have to come from stack - at least on cpu-versions
   // Otherwise (at least on some x86) givens_rotate suffers a lot as
   // the system struggles with cache-priorities
-  lcomplex q[n_eigs+n_eigs_extend];
-  lcomplex qtemp[n_eigs+n_eigs_extend];
-  lcomplex givens[2*(n_eigs + n_eigs_extend)];
+  //lcomplex q[n_eigs+n_eigs_extend];
+  //lcomplex qtemp[n_eigs+n_eigs_extend];
+  //lcomplex givens[2*(n_eigs + n_eigs_extend)];
+
+  lcomplex* q = (lcomplex*)s_mallocf(sizeof(lcomplex) * (n_eigs+n_eigs_extend));
+  lcomplex* qtemp = (lcomplex*)s_mallocf(sizeof(lcomplex) * (n_eigs+n_eigs_extend));
+  lcomplex* givens = (lcomplex*)s_mallocf(sizeof(lcomplex) * 2 * (n_eigs+n_eigs_extend));
+
   /*lcomplex *q;
   lcomplex *qtemp;
   lcomplex *givens;*/
@@ -2834,14 +2840,15 @@ int arnoldi(fieldtype **eig_vec,// vectors
   double magf;
 
   //lcomplex *y  = NULL;
-  lcomplex y[n_eigs+n_eigs_extend];
+  //lcomplex y[n_eigs+n_eigs_extend];
+  lcomplex* y = (lcomplex*)s_mallocf(sizeof(lcomplex) * (n_eigs+n_eigs_extend));
 
   lcomplex theta;
 
   int deflated_this_time = 0;
 
 #ifdef EIG_DEBUG
-  double timer;
+  double timer = 0.0;
 #endif
 
 #ifdef TRACE_STATISTICS
@@ -2889,12 +2896,18 @@ int arnoldi(fieldtype **eig_vec,// vectors
   hsmall = cmat_new(h.n);
   rsmall = cmat_new(h.n);
 
+  if (!q || !qtemp || !givens || !y)
+      goto cleanup;
+
   // Check that allocations were successful
   if (!(f && wvec_tmp && hdiag.e && ritzvec.e && Q.e && R.e && h.e &&
         Hnew.e && hsmall.e && rsmall.e /*&& q && qtemp && givens*/)){
       error = -1;
       goto cleanup;
   }
+
+
+
 
   cmat_zero(&h);
 
@@ -3422,6 +3435,12 @@ cleanup:
       if (s_streamBufs) s_freef(s_streamBufs);
       if (s_streamBufSizes) s_freef(s_streamBufSizes);
   }
+
+  if (q) s_freef(q);
+  if (qtemp) s_freef(qtemp);
+  if (givens) s_freef(givens);
+
+  if (y) s_freef(y);
 
   cmat_free(&hdiag);
   cmat_free(&ritzvec);

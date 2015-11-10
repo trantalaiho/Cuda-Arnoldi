@@ -7,7 +7,7 @@
 /*
  * lanczos_test.c - Teemu Rantalaiho 2014
  *
- *  Copyright 2013-2014 David Weir and Teemu Rantalaiho
+ *  Copyright 2013-2015 David Weir and Teemu Rantalaiho
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -26,20 +26,20 @@
  *
  *
  * To compile CPU-version:
- *   gcc -O4 lanczos_test.c slanczos.c -o lanczos_test.out -llapack -lm
+ *   gcc -O4 dlanczos_test.c dlanczos.c -o dlanczos_test.out -llapack -lm
  * Debug symbols and no optimizations:
- *   gcc -g lanczos_test.c slanczos.c -o lanczos_test.debug -llapack -lm
+ *   gcc -g dlanczos_test.c dlanczos.c -o dlanczos_test.debug -llapack -lm
  * To compile GPU-version:
- *   nvcc -DCUDA --x cu -O4 -arch=<your arch - for example sm_20> lanczos_test.c slanczos.c -o lanczos_test.gpu -llapack -lcudart
+ *   nvcc -DCUDA --x cu -O4 -arch=<your arch - for example sm_20> dlanczos_test.c dlanczos.c -o dlanczos_test.gpu -llapack -lcudart
  * Debug symbols and no optimizations on CPU-side:
- *   nvcc -DCUDA --x cu -g lanczos_test.c slanczos.c -o lanczos_test.dbggpu -llapack -lcudart
+ *   nvcc -DCUDA --x cu -g dlanczos_test.c dlanczos.c -o dlanczos_test.dbggpu -llapack -lcudart
  *
  *   NOTE: with older versions of nvcc it seems that you have to rename the source-files to .cu ending for some odd reason
  *
  * To Compile lib-arcpack++ - version:
- *   g++ -O4 -DARPACKPP lanczos_test.c slanczos.c -o lanczos_test.out_arp -llapack -lm -larpack++ -I<path to lib-arpack++ headers> -lblas -larpack
+ *   g++ -O4 -DARPACKPP dlanczos_test.c dlanczos.c -o dlanczos_test.out_arp -llapack -lm -larpack++ -I<path to lib-arpack++ headers> -lblas -larpack
  * for example
- *   g++ -O4 -DARPACKPP lanczos_test.c slanczos.c -o lanczos_test.out_arp -llapack -lm -larpack++ -I/usr/include/arpack++ -lblas -larpack
+ *   g++ -O4 -DARPACKPP dlanczos_test.c dlanczos.c -o dlanczos_test.out_arp -llapack -lm -larpack++ -I/usr/include/arpack++ -lblas -larpack
  *
  */
 
@@ -54,7 +54,7 @@
 
 #include "apar_defs.h"
 
-#define radix float
+#define radix double
 
 typedef struct mvec_in_s
 {
@@ -96,7 +96,7 @@ private:
 public:
     int ncols(void){ return size; }
     void MultMv(arcomplex<float>* src, arcomplex<float>* dst){
-        matmulfun((void*)&size, (scomplex_t*)src, (scomplex_t*)dst);
+        matmulfun((void*)&size, (dcomplex_t*)src, (dcomplex_t*)dst);
     }
     OurMatrix(int size) { this->size = size; }
 };
@@ -114,7 +114,7 @@ char* modeToStr(arnmode mode){
     }
 }
 
-int arpackpp_solve(int size, scomplex_t* results, int n_eigs, scomplex_t* initVec, int maxiter, float tol, int n_extend, arnmode mode){
+int arpackpp_solve(int size, dcomplex_t* results, int n_eigs, dcomplex_t* initVec, int maxiter, float tol, int n_extend, arnmode mode){
     std::complex<float>* tmpres = (std::complex<float>*)results;
     OurMatrix A(size);
     void (OurMatrix::* mulfunptr) (arcomplex<float>[],arcomplex<float>[]) = &OurMatrix::MultMv;
@@ -154,7 +154,7 @@ int main(int argc, char *argv[]) {
   int n_eigs = 4;
 
   // final eigenvalues
-  scomplex_t* results;
+  dcomplex_t* results;
 
   // number of additional arnoldi iterations
   int n_extend = 2;
@@ -199,7 +199,7 @@ int main(int argc, char *argv[]) {
   olditer = maxiter;
 
   init_vec = (radix *)malloc(N*sizeof(radix));
-  results = (scomplex_t *)malloc(n_eigs*sizeof(scomplex_t));
+  results = (dcomplex_t *)malloc(n_eigs*sizeof(dcomplex_t));
 
   for(i=0; i<N; i++) {
     // something naive for initial vector
@@ -260,7 +260,7 @@ int main(int argc, char *argv[]) {
   arpackpp_solve(N, results, n_eigs, init_vec, maxiter, tol, n_extend, mode);
 #else
       error =
-        run_slanczos(results, devinit_vec, NULL, N, 1, 0,
+        run_dlanczos(results, devinit_vec, NULL, N, 1, 0,
                      n_eigs, n_extend, tol, &maxiter, &functions, mode);
 #endif
 #if !defined(ARPACKPP)

@@ -112,6 +112,10 @@ How to use it
 			the initial vector (which will be normalized)
      - Compile normally
      - Compare with "zarnoldi.c" or "carnoldi.c"
+	 - In order to compile on Visual Studio, compile as C++ (or read settings for nvcc 
+	   from above ("nvcc -x cu" should work)). Only tested on CPU - in order to use 
+	   the project file included, copy "lapack.lib", "blas.lib" and "libf2c.lib" static
+	   libraries from for example: http://icl.cs.utk.edu/lapack-for-windows/clapack/
 
 Performance
 ===========

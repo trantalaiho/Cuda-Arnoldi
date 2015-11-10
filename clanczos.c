@@ -303,7 +303,7 @@ int run_clanczos(
 #ifdef TIMER
     s_cputimef = &cputime;
 #endif
-    error = run_arnoldiabs(n_eigs, n_extend, tolerance, e_vecs, (lcomplex*)e_vals, maxIter, size, nMulti, stride, mode);
+    error = run_arnoldiabs(n_eigs, n_extend, (radix)tolerance, e_vecs, (lcomplex*)e_vals, maxIter, size, nMulti, stride, mode);
     if (error)
         goto cleanup;
     for (i = 0; i < n_eigs + n_extend; i++){

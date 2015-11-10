@@ -268,7 +268,7 @@ int run_slanczos(
 
     scalar_reduction_f = functions->scalar_redFun;
     complex_reduction_f = functions->complex_redFun;
-    error = run_arnoldiabs(n_eigs, n_extend, tolerance, e_vecs, (lcomplex*)e_vals, maxIter, size, nMulti, stride, mode);
+    error = run_arnoldiabs(n_eigs, n_extend, (radix)tolerance, e_vecs, (lcomplex*)e_vals, maxIter, size, nMulti, stride, mode);
     if (error)
         goto cleanup;
     for (i = 0; i < n_eigs + n_extend; i++){
